@@ -71,12 +71,9 @@ async def pub_(bot, message):
         try:
             MSG = []
             pling = 0
-            if not hasattr(temp, "media_group_buffer"):
-                temp.media_group_buffer = {}
-
-            # Album batching config
-            ALBUM_BATCH_SIZE = 10  # max 10 for Telegram
-            ALBUM_SEND_DELAY = 5   # seconds between album sends
+            # Buffer album per group, bukan global
+            album_buffer = {}
+            last_group_id = None
 
             await edit(m, 'Progressing', 10, sts)
             print(f"Starting Forwarding Process... From :{sts.get('FROM')} To: {sts.get('TO')} Total: {sts.get('limit')} Skip: {sts.get('skip')})")
@@ -113,14 +110,22 @@ async def pub_(bot, message):
                 else:
                     group_id = message.media_group_id
                     if group_id:
-                        buffer = temp.media_group_buffer.setdefault(group_id, [])
+                        # Jika group_id berubah, flush buffer sebelumnya
+                        if last_group_id is not None and group_id != last_group_id and last_group_id in album_buffer:
+                            await send_album(client, album_buffer[last_group_id], caption, button, sts, m)
+                            await asyncio.sleep(2)
+                            del album_buffer[last_group_id]
+                        # Tambahkan ke buffer album sesuai group_id
+                        buffer = album_buffer.setdefault(group_id, [])
                         buffer.append(message)
-                        # flush album if buffer full (assume max 10)
-                        if len(buffer) >= ALBUM_BATCH_SIZE:
-                            await send_album(client, buffer, caption, button, sts, m)
-                            del temp.media_group_buffer[group_id]
-                            await asyncio.sleep(ALBUM_SEND_DELAY)
+                        last_group_id = group_id
                     else:
+                        # Jika ada buffer album yang belum dikirim, kirim dulu
+                        if last_group_id is not None and last_group_id in album_buffer:
+                            await send_album(client, album_buffer[last_group_id], caption, button, sts, m)
+                            await asyncio.sleep(2)
+                            del album_buffer[last_group_id]
+                            last_group_id = None
                         new_caption = custom_caption(message, caption)
                         details = {
                             "msg_id": message.id,
@@ -133,11 +138,11 @@ async def pub_(bot, message):
                         sts.add('total_files')
                         await asyncio.sleep(sleep)
 
-            # flush album buffer if any left, and add delay between each album send
-            for group_id, group_msgs in list(temp.media_group_buffer.items()):
+            # flush album buffer jika masih ada sisa
+            for group_id, group_msgs in list(album_buffer.items()):
                 await send_album(client, group_msgs, caption, button, sts, m)
-                await asyncio.sleep(ALBUM_SEND_DELAY)
-            temp.media_group_buffer.clear()
+                await asyncio.sleep(2)
+            album_buffer.clear()
 
         except Exception as e:
             await msg_edit(m, f'<b>Error :</b>\n<code>{e}</code>', wait=True)
@@ -150,8 +155,7 @@ async def pub_(bot, message):
 
 async def send_album(bot, messages, caption_template, button, sts, m):
     """
-    Kirim album (media group) sekaligus, bukan satu-satu.
-    Ada delay antar album (bukan antar file).
+    Kirim album (media group) sesuai group_id, tidak dicampur dengan album lain.
     """
     if not messages:
         return
@@ -162,30 +166,30 @@ async def send_album(bot, messages, caption_template, button, sts, m):
 
     # Bikin list InputMedia untuk album
     input_medias = []
-    for msg in messages:
+    for idx, msg in enumerate(messages):
         media_obj = None
         if msg.photo:
             media_obj = InputMediaPhoto(
                 media=msg.photo.file_id,
-                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,  # caption hanya di media pertama
+                caption=custom_caption(msg, caption_template) if idx == 0 else None,  # caption hanya di media pertama
                 parse_mode="html"
             )
         elif msg.video:
             media_obj = InputMediaVideo(
                 media=msg.video.file_id,
-                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,
+                caption=custom_caption(msg, caption_template) if idx == 0 else None,
                 parse_mode="html"
             )
         elif msg.document:
             media_obj = InputMediaDocument(
                 media=msg.document.file_id,
-                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,
+                caption=custom_caption(msg, caption_template) if idx == 0 else None,
                 parse_mode="html"
             )
         elif msg.audio:
             media_obj = InputMediaAudio(
                 media=msg.audio.file_id,
-                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,
+                caption=custom_caption(msg, caption_template) if idx == 0 else None,
                 parse_mode="html"
             )
         if media_obj:
