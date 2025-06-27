@@ -1,12 +1,19 @@
-FROM python:3.8-slim-buster
+
+
+FROM python
 
 RUN apt update && apt upgrade -y
-RUN apt install git -y
-COPY requirements.txt /requirements.txt
 
-RUN cd /
-RUN pip3 install -U pip && pip3 install -U -r requirements.txt
-RUN JishuDeveloper /Ultra-Forward-Bot
+# Salin semua isi source code ke dalam folder kerja
+COPY . /Ultra-Forward-Bot
 WORKDIR /Ultra-Forward-Bot
+
+# Install dependensi
+RUN pip3 install --upgrade pip && pip3 install -r requirements.txt
+
+# Jalankan start.sh
 COPY start.sh /start.sh
-CMD ["/bin/bash", "/start.sh"] 
+RUN chmod +x /start.sh
+
+EXPOSE 8080
+CMD ["/bin/bash", "/start.sh"]
