@@ -73,9 +73,6 @@ async def pub_(bot, message):
             pling = 0
             if not hasattr(temp, "media_group_buffer"):
                 temp.media_group_buffer = {}
-            if hasattr(temp, "media_group_buffer"):
-                temp.media_group_buffer.clear()
-
 
             await edit(m, 'Progressing', 10, sts)
             print(f"Starting Forwarding Process... From :{sts.get('FROM')} To: {sts.get('TO')} Total: {sts.get('limit')} Skip: {sts.get('skip')})")
@@ -114,8 +111,8 @@ async def pub_(bot, message):
                     if group_id:
                         buffer = temp.media_group_buffer.setdefault(group_id, [])
                         buffer.append(message)
-                        await asyncio.sleep(1)
-                        if len(buffer) >= 10:  # asumsi batas maksimum album
+                        # flush album if buffer full (assume max 10)
+                        if len(buffer) >= 10:
                             await send_album(client, buffer, caption, button, sts, m)
                             del temp.media_group_buffer[group_id]
                     else:
@@ -132,7 +129,7 @@ async def pub_(bot, message):
                         await asyncio.sleep(sleep)
 
             # flush album buffer if any left
-            for group_id, group_msgs in temp.media_group_buffer.items():
+            for group_id, group_msgs in list(temp.media_group_buffer.items()):
                 await send_album(client, group_msgs, caption, button, sts, m)
             temp.media_group_buffer.clear()
 
@@ -146,59 +143,43 @@ async def pub_(bot, message):
         await stop(client, user)
 
 async def send_album(bot, messages, caption_template, button, sts, m):
+    """
+    Use copy_media_group to copy the album as a group, not one by one.
+    https://pyrofork.wulan17.dev/main/api/methods/copy_media_group.html
+    """
     if not messages:
         return
 
-    # Bagi chunk jadi maksimal 10 file
-    chunks = [messages[i:i + 10] for i in range(0, len(messages), 10)]
-    for chunk in chunks:
-        media_list = []
-        for i, msg in enumerate(chunk):
-            file_id = media(msg)
-            if not file_id:
-                continue
+    from_chat_id = messages[0].chat.id if hasattr(messages[0], "chat") else None
+    message_ids = [msg.id for msg in messages]
+    to_chat_id = sts.get("TO")
+    protect_content = getattr(messages[0], "protect_content", False)
 
-            cap = custom_caption(msg, caption_template) if i == 0 else None
-            try:
-                if msg.photo:
-                    media_obj = InputMediaPhoto(media=file_id, caption=cap, parse_mode="html")
-                elif msg.video:
-                    media_obj = InputMediaVideo(media=file_id, caption=cap, parse_mode="html")
-                elif msg.document:
-                    media_obj = InputMediaDocument(media=file_id, caption=cap, parse_mode="html")
-                elif msg.audio:
-                    media_obj = InputMediaAudio(media=file_id, caption=cap, parse_mode="html")
-                else:
-                    continue
-                media_list.append(media_obj)
-            except Exception as e:
-                print(f"Error building media object: {e}")
-                continue
-
-        if media_list:
-            try:
-                await bot.send_media_group(
-                    chat_id=sts.get("TO"),
-                    media=media_list,
-                    protect_content=getattr(chunk[0], "protect_content", False)
-                )
-                sts.add("total_files", len(media_list))
-            except FloodWait as e:
-                await edit(m, "Progressing", e.value, sts)
-                await asyncio.sleep(e.value)
-                await send_album(bot, chunk, caption_template, button, sts, m)
-            except Exception as e:
-                print(f"Error sending album: {e}")
-                for msg in chunk:
-                    details = {
-                        "msg_id": msg.id,
-                        "media": media(msg),
-                        "caption": custom_caption(msg, caption_template),
-                        "button": button,
-                        "protect": getattr(msg, "protect_content", False)
-                    }
-                    await copy(bot, details, m, sts)
-
+    try:
+        # pyrofork's copy_media_group supports copying as a group
+        await bot.copy_media_group(
+            chat_id=to_chat_id,
+            from_chat_id=from_chat_id,
+            message_ids=message_ids,
+            protect_content=protect_content,
+        )
+        sts.add("total_files", len(messages))
+    except FloodWait as e:
+        await edit(m, "Progressing", e.value, sts)
+        await asyncio.sleep(e.value)
+        await send_album(bot, messages, caption_template, button, sts, m)
+    except Exception as e:
+        print(f"Error sending album: {e}")
+        # fallback: copy one by one
+        for msg in messages:
+            details = {
+                "msg_id": msg.id,
+                "media": media(msg),
+                "caption": custom_caption(msg, caption_template),
+                "button": button,
+                "protect": getattr(msg, "protect_content", False)
+            }
+            await copy(bot, details, m, sts)
 
 async def copy(bot, msg, m, sts):
     try:                                  
