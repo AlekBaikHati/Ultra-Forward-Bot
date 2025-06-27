@@ -74,6 +74,10 @@ async def pub_(bot, message):
             if not hasattr(temp, "media_group_buffer"):
                 temp.media_group_buffer = {}
 
+            # Album batching config
+            ALBUM_BATCH_SIZE = 10  # max 10 for Telegram
+            ALBUM_SEND_DELAY = 5   # seconds between album sends
+
             await edit(m, 'Progressing', 10, sts)
             print(f"Starting Forwarding Process... From :{sts.get('FROM')} To: {sts.get('TO')} Total: {sts.get('limit')} Skip: {sts.get('skip')})")
             async for message in client.iter_messages(
@@ -112,9 +116,10 @@ async def pub_(bot, message):
                         buffer = temp.media_group_buffer.setdefault(group_id, [])
                         buffer.append(message)
                         # flush album if buffer full (assume max 10)
-                        if len(buffer) >= 10:
+                        if len(buffer) >= ALBUM_BATCH_SIZE:
                             await send_album(client, buffer, caption, button, sts, m)
                             del temp.media_group_buffer[group_id]
+                            await asyncio.sleep(ALBUM_SEND_DELAY)
                     else:
                         new_caption = custom_caption(message, caption)
                         details = {
@@ -128,9 +133,10 @@ async def pub_(bot, message):
                         sts.add('total_files')
                         await asyncio.sleep(sleep)
 
-            # flush album buffer if any left
+            # flush album buffer if any left, and add delay between each album send
             for group_id, group_msgs in list(temp.media_group_buffer.items()):
                 await send_album(client, group_msgs, caption, button, sts, m)
+                await asyncio.sleep(ALBUM_SEND_DELAY)
             temp.media_group_buffer.clear()
 
         except Exception as e:
@@ -144,24 +150,56 @@ async def pub_(bot, message):
 
 async def send_album(bot, messages, caption_template, button, sts, m):
     """
-    Use copy_media_group to copy the album as a group, not one by one.
-    https://pyrofork.wulan17.dev/main/api/methods/copy_media_group.html
+    Kirim album (media group) sekaligus, bukan satu-satu.
+    Ada delay antar album (bukan antar file).
     """
     if not messages:
         return
 
     from_chat_id = messages[0].chat.id if hasattr(messages[0], "chat") else None
-    message_ids = [msg.id for msg in messages]
     to_chat_id = sts.get("TO")
     protect_content = getattr(messages[0], "protect_content", False)
 
+    # Bikin list InputMedia untuk album
+    input_medias = []
+    for msg in messages:
+        media_obj = None
+        if msg.photo:
+            media_obj = InputMediaPhoto(
+                media=msg.photo.file_id,
+                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,  # caption hanya di media pertama
+                parse_mode="html"
+            )
+        elif msg.video:
+            media_obj = InputMediaVideo(
+                media=msg.video.file_id,
+                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,
+                parse_mode="html"
+            )
+        elif msg.document:
+            media_obj = InputMediaDocument(
+                media=msg.document.file_id,
+                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,
+                parse_mode="html"
+            )
+        elif msg.audio:
+            media_obj = InputMediaAudio(
+                media=msg.audio.file_id,
+                caption=custom_caption(msg, caption_template) if msg == messages[0] else None,
+                parse_mode="html"
+            )
+        if media_obj:
+            input_medias.append(media_obj)
+
+    if not input_medias:
+        return
+
     try:
-        # pyrofork's copy_media_group supports copying as a group
-        await bot.copy_media_group(
+        await bot.send_media_group(
             chat_id=to_chat_id,
-            from_chat_id=from_chat_id,
-            message_ids=message_ids,
+            media=input_medias,
             protect_content=protect_content,
+            reply_markup=button if button and len(input_medias) == 1 else None  # only if single media
         )
         sts.add("total_files", len(messages))
     except FloodWait as e:
